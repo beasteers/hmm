@@ -1,20 +1,13 @@
 from sets import Set
 import random
 
-# observations = ['normal', 'cold', 'dizzy', 'cold', 'cold', 'dizzy', 'normal', 'normal']
-# observations2 = ['normal', 'normal', 'dizzy', 'dizzy', 'cold', 'dizzy', 'normal', 'normal', 'dizzy', 'normal', 'normal', 'normal', 'dizzy', 'cold', 'normal', 'normal', 'dizzy', 'cold', 'normal', 'normal', 'dizzy']
-#  
-# start_probability = {'Healthy': 0.6, 'Fever': 0.4}
-#  
-# transition_probability = {
-#    'Healthy' : {'Healthy': 0.7, 'Fever': 0.3},
-#    'Fever' : {'Healthy': 0.4, 'Fever': 0.6}
-#    }
-#  
-# emission_probability = {
-#    'Healthy' : {'normal': 0.5, 'cold': 0.4, 'dizzy': 0.1},
-#    'Fever' : {'normal': 0.1, 'cold': 0.3, 'dizzy': 0.6}
-#    }
+'''
+To do:
+ - add convergence detection
+ - not sure how baum-welch is supposed to infer state accurately especially with arbitrarily defined initial transition/emission matricies
+ - probably transition over to numpy at some point
+ - add comments
+'''
 
 
 class HMM:
@@ -26,54 +19,60 @@ class HMM:
       self.b = {}
       self.pi = {}
       if a and b and pi:
-         self.defHMM(a, b, pi)
+         self.defineHMM(a, b, pi)
       
       self.alpha = [] #forward probabilities
       self.beta = [] #backward probabilities
       
-      self.delta = []
-      self.path = {}
+      self.delta = [] #viterbi probabilities
+      self.path = {} #viterbi path
       
       self.obs = []
-      
+            
+      #Defines how much learning will influence current matricies represented as a fraction (num, den)
       self.influence = (1, 10)
       
-   
+   # Generate intial matricies with equal probabilities based on given sets of states
    def generateMatrix(self, hidden, observable):
       self.hiddenStates = hidden
       self.observableStates = observable
       for i in hidden:
          self.a[i] = {}
          self.b[i] = {}
-         self.pi[i] = 0.5
+         self.pi[i] = 1.0/len(hidden)
          for e in observable:
-            self.b[i][e] = 0.5
+            self.b[i][e] = 1.0/len(observable)
          for j in hidden:
-            self.a[i][j] = 0.5
-            
-   def defHMM(self, a, b, pi):
+            self.a[i][j] = 1.0/len(hidden)
+   
+   # Define HMM with state/alphabet inference
+   def defineHMM(self, a=False, b=False, pi=False):
       for hidden in b:
          self.hiddenStates.append(hidden)
          self.observableStates.extend(b[hidden].keys())
       #remove duplicates
       self.observableStates = list(Set(self.observableStates))
       
-      self.a = a
-      self.b = b
-      self.pi = pi
+      if a: self.a = a
+      if b: self.b = b
+      if pi: self.pi = pi
    
-   def generate(self, length):
+   # Generate string based off HMM
+   def generate(self, length, onlyObs = False):
       seq = []
-      n = self.weightedRandom(self.pi)
-      seq.append(  (n, self.weightedRandom(self.b[n]))  )
+      n = self._weightedRandom(self.pi)
+      o = self._weightedRandom(self.b[n])
+      if onlyObs: seq.append(o)
+      else:       seq.append((n, o))
       for l in range(length):
-         n = self.weightedRandom(self.a[n])
-         #seq.append(self.weightedRandom(self.b[n]))
-         seq.append(  (n, self.weightedRandom(self.b[n]))  )
+         n = self._weightedRandom(self.a[n])
+         o = self._weightedRandom(self.b[n])
+         if onlyObs: seq.append(o)
+         else:       seq.append((n, o))
       return seq
-         
-
-   def weightedRandom(self, arr):
+   
+   def _weightedRandom(self, arr):
+      #Assuming total is 1
       rnd = random.random()
       for i, w in arr.iteritems():
          rnd -= w
@@ -118,9 +117,9 @@ class HMM:
       #    print obs[x]+': '+path[x]
          
       return (prob, path)
+
    
-   
-   def forward(self, obs = False):
+   def _forward(self, obs = False):
       ##If no observation, just return the last value
       if obs:
          start = 0
@@ -153,7 +152,7 @@ class HMM:
       return Pr
       
    
-   def backward(self, obs=False):
+   def _backward(self, obs=False):
       ##If no observation, just return the last value
       if obs:
          self.beta = []
@@ -177,18 +176,22 @@ class HMM:
          Pr += self.beta[t][j]
       return Pr
    
-   
+   ## Unsupervised Learning:
+   ## Parameter estimation using observations
+   ##############################################
    def baum_welch(self, obs):
       self.obs = obs
-      self.forward(obs)
-      self.backward(obs)
+      self._forward(obs)
+      self._backward(obs)
+      T = len(obs)
 
       ######
       
-      T = len(obs)
+      ##Update Pi
       for i in self.hiddenStates:
-         self.pi[i] = self._gamma(0, i)
+         self.pi[i] = self._influence(self.pi[i], self._gamma(0, i))
       
+      ##Update Emissions
       for v in self.observableStates:
          for i in self.hiddenStates:
             gamma_sum = 0
@@ -198,8 +201,9 @@ class HMM:
                if obs[t] == v:
                   gamma_match += gamma_i
                gamma_sum += gamma_i
-            self.b[i][v] = gamma_match / gamma_sum
+            self.b[i][v] = self._influence(self.b[i][v], gamma_match / gamma_sum)
       
+      ##Update Transitions
       for i in self.hiddenStates:
          gamma_sum = 0
          for t in range(T-1):
@@ -209,8 +213,9 @@ class HMM:
             for t in range(T-1):
                zeta_i = self._zeta(t, i, j)
                zeta_sum += zeta_i
-            self.a[i][j] = zeta_sum / gamma_sum
-      
+            self.a[i][j] = self._influence(self.a[i][j], zeta_sum / gamma_sum)
+   
+   #probability of being in state i at time t
    def _gamma(self, t, i):
       den = 0;
       for j in self.hiddenStates:
@@ -218,6 +223,7 @@ class HMM:
       # print str(self.alpha[t][i] * self.beta[t][i])+" "+str(den)+" "+str(self.alpha[t][i] * self.beta[t][i]/den)
       return self.alpha[t][i] * self.beta[t][i] / den
    
+   #probability of being in i at t and j at t+1
    def _zeta(self, t, i, j):
       den = 0
       for k in self.hiddenStates:
@@ -225,7 +231,9 @@ class HMM:
             den += self.alpha[t][k] * self.a[k][l] * self.beta[t+1][l] * self.b[l][self.obs[t+1]]
       return self.alpha[t][i] * self.a[i][j] * self.beta[t+1][j] * self.b[j][self.obs[t+1]] / den
    
-   
+   ## Supervised Learning:
+   ## Parameter Esimation using state and observation
+   ##############################################
    def supertrain(self, seq):
       a = {}
       b = {}
@@ -251,28 +259,64 @@ class HMM:
       
       for i in self.hiddenStates:
          a[i] = self._normalize(a[i])
-         self.a[i] = self._influence(self.a[i], a[i])
+         for j in self.a[i]:
+            self.a[i][j] = self._influence(self.a[i][j], a[i][j])
          b[i] = self._normalize(b[i])
-         self.b[i] = self._influence(self.b[i], b[i])
+         for j in self.b[i]:
+            self.b[i][j] = self._influence(self.b[i][j], b[i][j])
       pi = self._normalize(pi)
-      self.pi = self._influence(self.pi, pi)
+      for i in self.pi:
+         self.pi[i] = self._influence(self.pi[i], pi[i])
 
-      
+   ##Normalize probabilities to 1
    def _normalize(self, arr):
       normalize = float(sum(arr[i] for i in arr))
       for i in arr:
          arr[i] = arr[i]/normalize
       return arr
    
+   ##Mix two values based on influence parameter
    def _influence(self, a, a1):
       (iNew, iTotal) = self.influence
-      for i in a:
-         a[i] = (a1[i]*iNew+a[i]*(iTotal-iNew)) / iTotal
-      return a
+      return (a1*iNew+a*(iTotal-iNew)) / iTotal
       
 
+# class MarkovMatrix:
+#    
+#    queue = []
+#    
+#    def __init__(self, matrix, x, y=False):
+#       self.m = matrix
+#       self.x = x
+#       self.y = y or x
+#       self.delim = ' '
+#    
+#    def next(self, n):
+#       self.queue.pop(0)
+#       self.queue.append(n)
+#       
+#    def __getitem__(self, k):
+#       j = self.delim.join(self.queue)
+#       return self.m[j][k]
+      
+   
+###Testing
 
 
+# observations = ['normal', 'cold', 'dizzy', 'cold', 'cold', 'dizzy', 'normal', 'normal']
+# observations2 = ['normal', 'normal', 'dizzy', 'dizzy', 'cold', 'dizzy', 'normal', 'normal', 'dizzy', 'normal', 'normal', 'normal', 'dizzy', 'cold', 'normal', 'normal', 'dizzy', 'cold', 'normal', 'normal', 'dizzy']
+#  
+# start_probability = {'Healthy': 0.6, 'Fever': 0.4}
+#  
+# transition_probability = {
+#    'Healthy' : {'Healthy': 0.7, 'Fever': 0.3},
+#    'Fever' : {'Healthy': 0.4, 'Fever': 0.6}
+#    }
+#  
+# emission_probability = {
+#    'Healthy' : {'normal': 0.5, 'cold': 0.4, 'dizzy': 0.1},
+#    'Fever' : {'normal': 0.1, 'cold': 0.3, 'dizzy': 0.6}
+#    }
 # hmm = HMM()
 # 
 # hmm.defHMM(transition_probability, emission_probability, start_probability)
